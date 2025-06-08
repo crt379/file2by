@@ -1,34 +1,38 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/exec"
-	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
-type Vary struct {
-	timer *time.Timer
-	op    fsnotify.Op
+type UploadInfo interface {
+	LocalPath() string
+	RemotePath() string
 }
 
 type ByUploader struct {
-	Queue       <-chan File
 	AfterDelete bool
 	BypyPath    string
 }
 
-func (u *ByUploader) Run() {
-	for t := range u.Queue {
-		if _, err := os.Stat(t.Path); err != nil {
-			log.Printf("文件不存在: %s", t.Path)
-			continue
-		}
+func (u *ByUploader) Run(ctx context.Context, queue <-chan UploadInfo) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("停止上传")
+			return
+		case f := <-queue:
+			path := f.LocalPath()
+			if _, err := os.Stat(path); err != nil {
+				log.Printf("文件不存在: %s", path)
+				continue
+			}
 
-		log.Printf("🚀 上传任务: %+v", t)
-		u.Upload(t.Path, t.Path[len(t.Root):])
+			log.Printf("🚀 上传任务: %+v", f)
+			u.Upload(path, f.RemotePath())
+		}
 	}
 }
 

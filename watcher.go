@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,21 +12,31 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+type Vary struct {
+	timer *time.Timer
+	op    fsnotify.Op
+}
+
 type Watcher struct {
+	// 监控对象
 	watcher     *fsnotify.Watcher
 	waitpath    string
 	abswaitpath string
-	queue       chan File
-	err         error
-	handleexps  []string
-	stock       bool
+
+	err error
+
+	// 处理的文件扩展名
+	exps []string
+
+	// 是否处理存量文件
+	stock bool
 
 	// 监听文件 事件
 	mu    sync.Mutex
 	varys map[string]*Vary
 }
 
-func NewWatcher(path string, stock bool, handleexps ...string) (*Watcher, error) {
+func NewWatcher(path string, stock bool, exps ...string) (*Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -40,8 +51,7 @@ func NewWatcher(path string, stock bool, handleexps ...string) (*Watcher, error)
 		watcher:     watcher,
 		waitpath:    path,
 		abswaitpath: abswaitpath,
-		queue:       make(chan File),
-		handleexps:  handleexps,
+		exps:        exps,
 		stock:       stock,
 		varys:       make(map[string]*Vary),
 	}
@@ -49,12 +59,8 @@ func NewWatcher(path string, stock bool, handleexps ...string) (*Watcher, error)
 	return w, nil
 }
 
-func (w *Watcher) Queue() <-chan File {
-	return w.queue
-}
-
 func (w *Watcher) ishandle(path string) bool {
-	for _, exp := range w.handleexps {
+	for _, exp := range w.exps {
 		if strings.HasSuffix(path, exp) {
 			return true
 		}
@@ -91,7 +97,7 @@ func (w *Watcher) varyDel(path string) {
 	delete(w.varys, path)
 }
 
-func (w *Watcher) Wait() {
+func (w *Watcher) Wait(ctx context.Context, fun func(f File)) {
 	// 递归添加监控目录
 	err := filepath.Walk(w.waitpath, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
@@ -110,10 +116,16 @@ func (w *Watcher) Wait() {
 		return
 	}
 
-	w.handleStock()
+	// 处理存量文件
+	if w.stock {
+		w.handleStock(fun)
+	}
 
 	for {
 		select {
+		case <-ctx.Done():
+			w.watcher.Close()
+			return
 		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
@@ -142,7 +154,7 @@ func (w *Watcher) Wait() {
 				}
 
 				log.Printf("%s %s", event.Op.String(), event.Name)
-				w.fileTiming(event.Name, event.Op)
+				w.fileTiming(event.Name, event.Op, fun)
 			case event.Has(fsnotify.Rename), event.Has(fsnotify.Remove):
 				log.Printf("%s %s", event.Op.String(), event.Name)
 				if w.varyOnf(event.Name, func(vary *Vary) {
@@ -164,7 +176,7 @@ func (w *Watcher) Wait() {
 	}
 }
 
-func (w *Watcher) fileTiming(path string, op fsnotify.Op) {
+func (w *Watcher) fileTiming(path string, op fsnotify.Op, fun func(f File)) {
 	timer := time.NewTimer(WaitFor)
 	w.varyAdd(path, &Vary{timer: timer, op: op})
 
@@ -180,16 +192,16 @@ func (w *Watcher) fileTiming(path string, op fsnotify.Op) {
 			abspath = path
 		}
 
-		w.queue <- File{
+		fun(File{
 			Path: abspath,
 			Root: w.abswaitpath,
-		}
+		})
 
 		w.varyDel(path)
 	}()
 }
 
-func (w *Watcher) handleStock() {
+func (w *Watcher) handleStock(fun func(f File)) {
 	// 使用切片存储所有文件路径
 	var files []string
 
@@ -216,7 +228,7 @@ func (w *Watcher) handleStock() {
 	log.Printf("找到 %d 个存量文件:\n", len(files))
 	for _, file := range files {
 		log.Println(file)
-		w.fileTiming(file, 0)
+		w.fileTiming(file, 0, fun)
 	}
 }
 

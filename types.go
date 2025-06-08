@@ -7,6 +7,16 @@ type File struct {
 	Path string
 }
 
+type UFile File
+
+func (u *UFile) LocalPath() string {
+	return u.Path
+}
+
+func (u *UFile) RemotePath() string {
+	return u.Path[len(u.Root):]
+}
+
 // StringSlice 自定义字符串切片类型
 type StringSlice []string
 

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,15 +51,45 @@ func main() {
 	}
 
 	uploader := ByUploader{
-		Queue:       watcher.Queue(),
 		AfterDelete: true,
 		BypyPath:    bypypath,
 	}
 
-	go uploader.Run()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	watcher.Wait()
-	if err = watcher.Error(); err != nil {
-		panic(err)
-	}
+	// 优雅关闭通道：监听系统信号
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	var wg sync.WaitGroup
+
+	uploadch := make(chan UploadInfo)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		uploader.Run(ctx, uploadch)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		watcher.Wait(ctx, func(f File) {
+			uf := UFile(f)
+			uploadch <- &uf
+		})
+		if err = watcher.Error(); err != nil {
+			panic(err)
+		}
+	}()
+
+	<-sigChan
+
+	log.Println("Shutting down...")
+	cancel()
+
+	wg.Wait()
+	log.Println("Bye!")
 }
