@@ -19,6 +19,7 @@ type Vary struct {
 
 type Watcher struct {
 	// 监控对象
+	waitfor     time.Duration
 	watcher     *fsnotify.Watcher
 	waitpath    string
 	abswaitpath string
@@ -36,7 +37,7 @@ type Watcher struct {
 	varys map[string]*Vary
 }
 
-func NewWatcher(path string, stock bool, exps ...string) (*Watcher, error) {
+func NewWatcher(path string, stock bool, waitfor time.Duration, exps ...string) (*Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -48,6 +49,7 @@ func NewWatcher(path string, stock bool, exps ...string) (*Watcher, error) {
 	}
 
 	w := &Watcher{
+		waitfor:     waitfor,
 		watcher:     watcher,
 		waitpath:    path,
 		abswaitpath: abswaitpath,
@@ -133,6 +135,13 @@ func (w *Watcher) Wait(ctx context.Context, fun func(f File)) {
 
 			fileinfog, err := os.Stat(event.Name)
 			if err == nil && fileinfog.IsDir() {
+				switch {
+				case event.Has(fsnotify.Create):
+					w.watcher.Add(event.Name)
+				case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
+					w.watcher.Remove(event.Name)
+				}
+
 				continue
 			}
 
@@ -148,7 +157,7 @@ func (w *Watcher) Wait(ctx context.Context, fun func(f File)) {
 					}
 
 					vary.op = event.Op
-					vary.timer.Reset(WaitFor)
+					vary.timer.Reset(w.waitfor)
 				}) {
 					continue
 				}
@@ -157,19 +166,13 @@ func (w *Watcher) Wait(ctx context.Context, fun func(f File)) {
 				w.fileTiming(event.Name, event.Op, fun)
 			case event.Has(fsnotify.Rename), event.Has(fsnotify.Remove):
 				log.Printf("%s %s", event.Op.String(), event.Name)
-				if w.varyOnf(event.Name, func(vary *Vary) {
+				w.varyOnf(event.Name, func(vary *Vary) {
 					vary.op = event.Op
 					vary.timer.Stop()
 					delete(w.varys, event.Name)
-				}) {
-					return
-				}
+				})
 			}
-		case err, ok := <-w.watcher.Errors:
-			if !ok {
-				return
-			}
-
+		case err = <-w.watcher.Errors:
 			w.err = err
 			log.Println("⚠️ 监控错误:", err)
 		}
@@ -177,7 +180,7 @@ func (w *Watcher) Wait(ctx context.Context, fun func(f File)) {
 }
 
 func (w *Watcher) fileTiming(path string, op fsnotify.Op, fun func(f File)) {
-	timer := time.NewTimer(WaitFor)
+	timer := time.NewTimer(w.waitfor)
 	w.varyAdd(path, &Vary{timer: timer, op: op})
 
 	go func() {

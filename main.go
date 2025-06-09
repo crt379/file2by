@@ -12,24 +12,25 @@ import (
 )
 
 var (
-	WaitFor = 10 * time.Second
-	LogPath = "file2by.log"
-)
-
-var (
 	waitpath string
 	bypypath string
 
 	exps  StringSlice
 	stock bool
+
+	logPath string
+
+	waitfor time.Duration
 )
 
 func init() {
 	// 绑定命令行参数到变量
-	flag.StringVar(&waitpath, "w", ".", "监听文件变动路径")
-	flag.StringVar(&bypypath, "b", "bypy", "bypy 二进制路径")
-	flag.Var(&exps, "e", "监听的文件后缀")
-	flag.BoolVar(&stock, "s", false, "是否处理存量文件")
+	flag.StringVar(&waitpath, "wf", ".", "监听文件变动路径")
+	flag.StringVar(&bypypath, "bp", "bypy", "bypy 二进制路径")
+	flag.Var(&exps, "exps", "监听的文件后缀")
+	flag.BoolVar(&stock, "stock", false, "是否处理存量文件")
+	flag.StringVar(&logPath, "log", "file2by.log", "日志文件路径")
+	flag.DurationVar(&waitfor, "waitfor", 10*time.Second, "等待时间")
 
 	// 解析命令行参数
 	flag.Parse()
@@ -37,7 +38,7 @@ func init() {
 
 func main() {
 	// 打开文件（不存在则创建，追加写入）
-	logfile, err := os.OpenFile(LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logfile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatal("无法打开日志文件:", err)
 	}
@@ -45,7 +46,7 @@ func main() {
 
 	log.SetOutput(logfile)
 
-	watcher, err := NewWatcher(waitpath, stock, exps...)
+	watcher, err := NewWatcher(waitpath, stock, waitfor, exps...)
 	if err != nil {
 		panic(err)
 	}
@@ -81,7 +82,8 @@ func main() {
 			uploadch <- &uf
 		})
 		if err = watcher.Error(); err != nil {
-			panic(err)
+			log.Printf("Watcher error: %v", err)
+			os.Exit(1)
 		}
 	}()
 
